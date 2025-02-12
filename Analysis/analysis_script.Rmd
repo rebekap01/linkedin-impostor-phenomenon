@@ -1,0 +1,290 @@
+---
+title: "Data Analysis for Independent Research Project"
+output: html_notebook
+---
+
+### Loading required packages
+
+```{r warning=FALSE}
+library(readr)
+library(tidyverse)
+library(psych)
+library(naniar)
+library(Hmisc)
+library(supernova)
+library(lm.beta)
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(car)
+library(apaTables)
+library(corrplot)
+library(mediation)
+library(modplot)
+library(probemod)
+library(tidyselect)
+library(performance)
+library(patchwork)
+library(see)
+```
+
+### Reading data
+
+```{r warning=FALSE}
+demographics <- data.frame(read_csv(
+                                    "~/Privoznikova, Rebeka-Project/PB310 Research 
+                                Compendium/Appendices/data_exp_108492-v7_questionnaire-z5r6.csv"))
+scales <- data.frame(read_csv(
+                              "~/Privoznikova, Rebeka-Project/PB310 Research 
+                              Compendium/Appendices/data_exp_108492-v7_questionnaire-lr52.csv"))
+
+#Combining data from the two spreadsheets into one
+data <- merge(demographics, scales, all = TRUE)
+
+#Grouping the rows with the same Participant Private ID value together
+data <- arrange(data, "Participant Private ID")
+```
+
+
+### Cleaning and screening data
+
+```{r}
+#Selecting only the necessary columns
+data_cleaned <-
+  data %>%
+  subset(select = c(Participant.Private.ID, Question.Key, Response))
+
+#Removing the rows that only inform about the beginning or end of a questionnaire
+data_cleaned <-
+  subset(data_cleaned, Question.Key != "BEGIN QUESTIONNAIRE" & Question.Key != "END QUESTIONNAIRE")
+
+#Changing the format of the data from long to wide
+data_cleaned_wide <- reshape(
+                             data_cleaned, direction = "wide", idvar = "Participant.Private.ID",
+                             timevar = "Question.Key")
+
+#Getting rid of unnecessary variables added by Gorilla
+data_cleaned_wide <- dplyr::select(data_cleaned_wide, -contains(c("quantised", "text")))
+
+#Counting how many NAs each participant has
+data_cleaned_wide$na_count <- apply(is.na(data_cleaned_wide), 1, sum)
+
+#Removing participants with more than 4 NAs (>10% of data missing)
+data_cleaned_wide <- data_cleaned_wide %>%
+  filter(na_count <= 4)
+
+#Taking a closer look at each variable
+describe(data_cleaned_wide)
+
+#In case participants indicate 500+ connections we need only the 500
+data_cleaned_wide$`Response.LinkedIn-connections` <- parse_number(data_cleaned_wide$`Response.LinkedIn-connections`)
+
+#Saving the data into a spreadsheet for further manual editing
+write.csv(data_cleaned_wide, "~/Privoznikova, Rebeka-Project/PB310 Research 
+          Compendium/Appendices/precleaningdata.csv", row.names = FALSE)
+
+#Loading the edited spreadsheet back into R
+data_cleaned_wide <- data.frame(read_csv("~/Privoznikova, Rebeka-Project/PB310 Research 
+                                         Compendium/Appendices/cleaneddata.csv"))
+
+#Converting all the quantitative variables into type numeric
+data_cleaned_wide[, c(1:18, 20:54)] <- sapply(data_cleaned_wide[, c(1:18, 20:54)], as.numeric)
+```
+
+### Preliminary analyses
+
+```{r}
+#Taking a look at the correlations between all possible predictor and outcome variables
+rcorr(as.matrix(data_cleaned_wide[, c("ImpostorScore", "Response.LinkedIn.monthlyuse",
+                                      "Response.LinkedIn.connections",
+                                      "Response.LinkedIn.findingconnections",
+                                      "Response.LinkedIn.jobpostings", "Response.LinkedIn.likes",
+                                      "Response.LinkedIn.messaging", "Response.LinkedIn.newsfeed",
+                                      "Response.LinkedIn.othersprofiles",
+                                      "Response.LinkedIn.ownprofile", "Response.LinkedIn.posting",
+                                      "Response.LinkedIn.successful", "Response.LinkedIn.years")],
+                type = "pearson"))
+
+#Saving the descriptive statistics and correlations into a table
+apa.cor.table(data = subset(data_cleaned_wide, select = c("ImpostorScore",
+                                                          "Response.LinkedIn.monthlyuse",
+                                                          "Response.LinkedIn.connections",
+                                                          "Response.LinkedIn.findingconnections",
+                                                          "Response.LinkedIn.jobpostings",
+                                                          "Response.LinkedIn.likes",
+                                                          "Response.LinkedIn.messaging",
+                                                          "Response.LinkedIn.newsfeed",
+                                                          "Response.LinkedIn.othersprofiles",
+                                                          "Response.LinkedIn.ownprofile",
+                                                          "Response.LinkedIn.posting",
+                                                          "Response.LinkedIn.successful",
+                                                          "Response.LinkedIn.years")),
+              filename = "./AllCorrelations.doc", table.number = 1)
+```
+```{r}
+#Taking a look at the correlations between final selected predictor and outcome variables
+rcorr(as.matrix(
+                data_cleaned_wide[, c("ImpostorScore", "Response.LinkedIn.monthlyuse",
+                                      "Response.LinkedIn.connections",
+                                      "Response.LinkedIn.successful", "Response.LinkedIn.years")],
+                type = "pearson"))
+
+#Saving the final descriptive statistics and correlations into a table
+apa.cor.table(data = subset(data_cleaned_wide, select = c("ImpostorScore",
+                                                          "Response.LinkedIn.monthlyuse",
+                                                          "Response.LinkedIn.connections",
+                                                          "Response.LinkedIn.successful",
+                                                          "Response.LinkedIn.years")), filename =
+                "./SelectedCorrelations.doc", table.number = 2)
+```
+```{r}
+#Creating and saving a color-coded correlation matrix for easier visualization
+file_path <- "CorrelationMatrix.png"
+png(height = 750, width = 750, file = file_path, type = "cairo")
+m <- cor(data_cleaned_wide[, c("ImpostorScore", "Response.LinkedIn.monthlyuse",
+                               "Response.LinkedIn.connections",
+                               "Response.LinkedIn.findingconnections",
+                               "Response.LinkedIn.jobpostings", "Response.LinkedIn.likes",
+                               "Response.LinkedIn.messaging", "Response.LinkedIn.newsfeed",
+                               "Response.LinkedIn.othersprofiles", "Response.LinkedIn.ownprofile",
+                               "Response.LinkedIn.posting", "Response.LinkedIn.successful",
+                               "Response.LinkedIn.years")])
+corrplot(m, method = "number", bg = "gray99", diag = FALSE, outline = FALSE, cl.ratio = 0.2)
+dev.off()
+```
+
+
+### Primary analysis
+
+```{r}
+#Setting up the multiple regression model
+multiple.model <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.monthlyuse` +
+                       `Response.LinkedIn.connections` + `Response.LinkedIn.years` +
+                       `Response.LinkedIn.successful`, data = data_cleaned_wide)
+summary(multiple.model)
+lm.beta(multiple.model)
+
+#Saving the output of the model in a table
+apa.reg.table(multiple.model, filename = "./MultipleRegressionModelTable.doc", table.number = 3)
+```
+
+```{r}
+#Checking that all the pre-requisites for multiple regression are met
+file_path <- "MultipleRegressionCheck.png"
+png(height = 750, width = 750, file = file_path, type = "cairo")
+check_model(multiple.model)
+dev.off()
+```
+
+
+```{r}
+#Calculating predicted Impostor Scores based on our model for each participant
+data_cleaned_wide$predicted <- predict(multiple.model)
+
+#Calculating the residuals between the predicted and real scores
+data_cleaned_wide$residuals <- resid(multiple.model)
+```
+
+```{r warning=FALSE}
+#Visualizing the multiple regression model
+data_cleaned_wide %>%
+  ggplot(aes(x = predicted, y = ImpostorScore)) +
+  labs(title = "Real vs. Predicted IP Scores", x = "Predicted IP Scores", y = "Real IP Scores") +
+  geom_point() +
+  geom_hline(aes(yintercept = mean(ImpostorScore)), col = "darkblue", size = 1) +
+  stat_smooth(method = "lm",
+              col = "darkred",
+              se = FALSE,
+              size = 1) +
+  theme_minimal(base_size = 10) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+#Saving the output in a plot
+ggsave(file = "./MultipleRegressionModelPlot.png")
+```
+
+```{r}
+#Applying bootstrapping to the multiple regression model
+multiple.boot <- Boot(multiple.model, f = coef, R = 5000)
+summary(multiple.boot)
+
+#Calculating bootstrapped confidence intervals
+confint(multiple.boot, level = .95, type = "norm")
+```
+
+### Secondary analyses
+
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by social comparison
+model.a <- lm(SocialComparisonScore ~ 1 + `Response.LinkedIn.years`, data = data_cleaned_wide)
+summary(model.a)
+lm.beta(model.a)
+
+model.c <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years`, data = data_cleaned_wide)
+summary(model.c)
+lm.beta(model.c)
+
+model.b <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` + SocialComparisonScore, data = data_cleaned_wide)
+summary(model.b)
+lm.beta(model.b)
+
+mediation <- mediate(model.a, model.b, treat = "Response.LinkedIn.years", mediator =
+                       "SocialComparisonScore", boot = TRUE, sims = 5000, boot.ci.type = "perc",
+                     conf.level = 0.95)
+summary(mediation)
+```
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by age
+mod.model1 <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` + `
+                 Response.age` + `Response.LinkedIn.years` * `Response.age`, data =
+                   data_cleaned_wide)
+summary(mod.model1)
+mod.boot1 <- Boot(mod.model1, f = coef, R = 5000)
+confint(mod.boot1, level = .95, type = "norm")
+apa.reg.table(mod.model1, filename = "ModerationTableAge.doc", table.number = 4)
+```
+
+
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by gender
+mod.model2 <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` +
+                   `Response.gender` + `Response.LinkedIn.years` * `Response.gender`, data =
+                   data_cleaned_wide)
+summary(mod.model2)
+mod.boot2 <- Boot(mod.model2, f = coef, R = 5000)
+confint(mod.boot2, level = .95, type = "norm")
+apa.reg.table(mod.model2, filename = "ModerationTableGender.doc", table.number = 5)
+```
+
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by ethnicity
+mod.model3 <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` +
+                   `Response.ethnicity` + `Response.LinkedIn.years` * `Response.ethnicity`, data =
+                   data_cleaned_wide)
+summary(mod.model3)
+mod.boot3 <- Boot(mod.model3, f = coef, R = 5000)
+confint(mod.boot3, level = .95, type = "norm")
+apa.reg.table(mod.model3, filename = "ModerationTableEthnicity.doc", table.number = 6)
+```
+
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by occupation
+mod.model4 <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` +
+                   `Response.occupation` + `Response.LinkedIn.years` * `Response.occupation`, data
+                 = data_cleaned_wide)
+summary(mod.model4)
+mod.boot4 <- Boot(mod.model4, f = coef, R = 5000)
+confint(mod.boot4, level = .95, type = "norm")
+apa.reg.table(mod.model4, filename = "ModerationTableOccupation.doc", table.number = 7)
+```
+
+```{r}
+#Testing if the relationship between LinkedIn and IP is moderated by education
+mod.model5 <- lm(ImpostorScore ~ 1 + `Response.LinkedIn.years` +
+                   `Response.education` + `Response.LinkedIn.years` * `Response.education`, data =
+                   data_cleaned_wide)
+summary(mod.model5)
+mod.boot5 <- Boot(mod.model5, f = coef, R = 5000)
+confint(mod.boot5, level = .95, type = "norm")
+apa.reg.table(mod.model5, filename = "ModerationTableEducation.doc", table.number = 8)
+```
